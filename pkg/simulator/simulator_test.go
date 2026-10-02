@@ -34,8 +34,10 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 	featuregatetesting "k8s.io/component-base/featuregate/testing"
 	"k8s.io/klog/v2"
+	fwk "k8s.io/kube-scheduler/framework"
 	"k8s.io/kubernetes/pkg/features"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
+	"k8s.io/kubernetes/pkg/scheduler/backend/cache"
 	st "k8s.io/kubernetes/pkg/scheduler/testing"
 	"sigs.k8s.io/scheduler-library/pkg/upstreamsync/snapshot"
 	testutils "sigs.k8s.io/scheduler-library/pkg/upstreamsync/testutils"
@@ -721,5 +723,61 @@ func TestDRASnapshotIsolation(t *testing.T) {
 	}
 	if len(res2) != 1 || !res2[0].Status.IsSuccess() {
 		t.Fatalf("snap2 expected pod2 to schedule successfully (isolated from snap1 DRA allocation), got: %+v", res2)
+	}
+}
+
+// stubDRAManager stands in for the informer-backed manager. The test only checks which
+// manager the profiles were built with, so none of the accessors are ever called.
+type stubDRAManager struct{}
+
+var _ fwk.SharedDRAManager = &stubDRAManager{}
+
+func (s *stubDRAManager) ResourceClaims() fwk.ResourceClaimTracker     { return nil }
+func (s *stubDRAManager) ResourceSlices() fwk.ResourceSliceLister      { return nil }
+func (s *stubDRAManager) DeviceClasses() fwk.DeviceClassLister         { return nil }
+func (s *stubDRAManager) DeviceClassResolver() fwk.DeviceClassResolver { return nil }
+
+func TestWithSharedDRAManager(t *testing.T) {
+	stub := &stubDRAManager{}
+
+	tests := []struct {
+		name     string
+		opts     []Option
+		wantStub bool
+	}{
+		{
+			name:     "profiles built with a custom DRA manager",
+			opts:     []Option{WithSharedDRAManager(stub)},
+			wantStub: true,
+		},
+		{
+			name: "profiles built with the default informer-backed DRA manager",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := t.Context()
+			client := fake.NewClientset()
+			sim, err := NewSchedulingSimulator(ctx, minimalConfig(), ReadonlyClient{client: client}, informers.NewSharedInformerFactory(client, 0))
+			if err != nil {
+				t.Fatalf("NewSchedulingSimulator failed: %v", err)
+			}
+
+			profiles, err := sim.buildProfileMap(ctx, cache.NewEmptySnapshot(), tc.opts...)
+			if err != nil {
+				t.Fatalf("buildProfileMap failed: %v", err)
+			}
+
+			got := profiles.Map["default-scheduler"].SharedDRAManager()
+			switch {
+			case tc.wantStub && got != stub:
+				t.Errorf("SharedDRAManager() = %v, want the supplied stub", got)
+			case !tc.wantStub && got == nil:
+				t.Error("SharedDRAManager() = nil, want the informer-backed manager")
+			case !tc.wantStub && got == stub:
+				t.Error("SharedDRAManager() returned the stub, want the informer-backed manager")
+			}
+		})
 	}
 }

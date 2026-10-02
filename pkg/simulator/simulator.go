@@ -149,12 +149,22 @@ func NewSchedulingSimulator(
 	}, nil
 }
 
+// Option configures the scheduling profiles a ClusterState or ClusterSnapshot is built with.
+type Option = upstreamsync.FrameworkMapOption
+
+// WithSharedDRAManager makes the plugins read DRA objects through the given manager. A nil
+// manager keeps the informer-backed one.
+func WithSharedDRAManager(m fwk.SharedDRAManager) Option {
+	return upstreamsync.WithSharedDRAManager(m)
+}
+
 // NewClusterState initializes a new runtime cluster state.
+// The opts are applied when its scheduling profiles are built; see WithSharedDRAManager.
 // It is not safe to call concurrently with other NewClusterState or NewClusterSnapshot calls.
-func (s *SchedulingSimulator) NewClusterState(ctx context.Context) (*state.ClusterState, error) {
+func (s *SchedulingSimulator) NewClusterState(ctx context.Context, opts ...Option) (*state.ClusterState, error) {
 	snap := cache.NewEmptySnapshot()
 	internalCache := cache.New(ctx, nil, utilfeature.DefaultFeatureGate.Enabled(features.GenericWorkload), utilfeature.DefaultFeatureGate.Enabled(features.CompositePodGroup))
-	profiles, err := s.buildProfileMap(ctx, snap)
+	profiles, err := s.buildProfileMap(ctx, snap, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -163,6 +173,7 @@ func (s *SchedulingSimulator) NewClusterState(ctx context.Context) (*state.Clust
 }
 
 // NewClusterSnapshot initializes a new snapshot with the provided pods, nodes, pod groups, and composite pod groups.
+// The opts are applied when its scheduling profiles are built; see WithSharedDRAManager.
 // It is not safe to call concurrently with other NewClusterState or NewClusterSnapshot calls.
 func (s *SchedulingSimulator) NewClusterSnapshot(
 	ctx context.Context,
@@ -170,9 +181,10 @@ func (s *SchedulingSimulator) NewClusterSnapshot(
 	nodes []*v1.Node,
 	podGroups []*schedulingv1beta1.PodGroup,
 	compositePodGroups []*schedulingv1alpha3.CompositePodGroup,
+	opts ...Option,
 ) (Simulator, error) {
 	snap := cache.NewTestSnapshotWithCompositePodGroups(pods, nodes, podGroups, compositePodGroups)
-	profiles, err := s.buildProfileMap(ctx, snap)
+	profiles, err := s.buildProfileMap(ctx, snap, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -180,8 +192,8 @@ func (s *SchedulingSimulator) NewClusterSnapshot(
 	return snapshot.New(snap, profiles), nil
 }
 
-func (s *SchedulingSimulator) buildProfileMap(ctx context.Context, snap *cache.Snapshot) (*upstreamsync.ProfileMap, error) {
-	profiles, err := upstreamsync.NewFrameworkMap(ctx, s.comps, framework.DiscardRecorderFactory, snap)
+func (s *SchedulingSimulator) buildProfileMap(ctx context.Context, snap *cache.Snapshot, opts ...Option) (*upstreamsync.ProfileMap, error) {
+	profiles, err := upstreamsync.NewFrameworkMap(ctx, s.comps, framework.DiscardRecorderFactory, snap, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("schedlib: building scheduler: %w", err)
 	}

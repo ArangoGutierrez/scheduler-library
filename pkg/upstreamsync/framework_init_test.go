@@ -30,6 +30,7 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes/fake"
 	"k8s.io/client-go/tools/events"
+	fwk "k8s.io/kube-scheduler/framework"
 	schedulerapi "k8s.io/kubernetes/pkg/scheduler/apis/config"
 	internalcache "k8s.io/kubernetes/pkg/scheduler/backend/cache"
 	"k8s.io/kubernetes/pkg/scheduler/framework"
@@ -239,5 +240,62 @@ func TestFrameworkComponents_WithExtenders(t *testing.T) {
 	}
 	if len(comps.extenders) != 1 {
 		t.Fatalf("expected 1 extender, got %d", len(comps.extenders))
+	}
+}
+
+// stubDRAManager stands in for the informer-backed manager. The test only checks which
+// manager the frameworks were given, so none of the accessors are ever called.
+type stubDRAManager struct{}
+
+var _ fwk.SharedDRAManager = &stubDRAManager{}
+
+func (s *stubDRAManager) ResourceClaims() fwk.ResourceClaimTracker     { return nil }
+func (s *stubDRAManager) ResourceSlices() fwk.ResourceSliceLister      { return nil }
+func (s *stubDRAManager) DeviceClasses() fwk.DeviceClassLister         { return nil }
+func (s *stubDRAManager) DeviceClassResolver() fwk.DeviceClassResolver { return nil }
+
+func TestNewFrameworkMapSharedDRAManager(t *testing.T) {
+	stub := &stubDRAManager{}
+
+	tests := []struct {
+		name     string
+		opts     []FrameworkMapOption
+		wantStub bool
+	}{
+		{
+			name:     "a supplied DRA manager replaces the default one",
+			opts:     []FrameworkMapOption{WithSharedDRAManager(stub)},
+			wantStub: true,
+		},
+		{
+			name: "without a supplied DRA manager the default one is built",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := t.Context()
+			client := fake.NewClientset()
+			informerFactory := informers.NewSharedInformerFactory(client, 0)
+			comps, err := NewFrameworkComponents(ctx, client, informerFactory)
+			if err != nil {
+				t.Fatalf("NewFrameworkComponents failed: %v", err)
+			}
+
+			profileMap, err := NewFrameworkMap(ctx, comps, fakeRecorderFactory, internalcache.NewEmptySnapshot(), tt.opts...)
+			if err != nil {
+				t.Fatalf("NewFrameworkMap failed: %v", err)
+			}
+
+			got := profileMap.Map[v1.DefaultSchedulerName].SharedDRAManager()
+			switch {
+			case tt.wantStub && got != stub:
+				t.Errorf("SharedDRAManager() = %v, want the supplied stub", got)
+			case !tt.wantStub && got == nil:
+				t.Error("SharedDRAManager() = nil, want the default manager")
+			case !tt.wantStub && got == stub:
+				t.Error("SharedDRAManager() returned the stub, want the default manager")
+			}
+		})
 	}
 }
